@@ -109,7 +109,9 @@ def make_fpga_state(sdfg):
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
     r_output_buffer = state.add_read("output_buffer")
-    w_output_buffer = state.add_write("output_buffer")
+    #w_output_buffer = state.add_write("output_buffer")
+    #ro_output_buffer = state.add_read("output_buffer")
+    wo_output_buffer = state.add_write("output_buffer")
 
     sdfg.add_stream("output_stream",
                    dtype=dace.float32,
@@ -319,7 +321,7 @@ def make_sdfg():
     sdfg = dace.SDFG("rtl_matrix_multiplication")
 
     pre_state = make_copy_to_fpga_state(sdfg)
-    compute_state = make_fpga_state(sdfg)
+    compute_state = make_
     post_state = make_copy_to_host_state(sdfg)
 
     sdfg.add_edge(pre_state, compute_state, dace.InterstateEdge())
