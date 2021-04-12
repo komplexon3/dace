@@ -109,9 +109,7 @@ def make_fpga_state(sdfg):
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
     r_output_buffer = state.add_read("output_buffer")
-    #w_output_buffer = state.add_write("output_buffer")
-    #ro_output_buffer = state.add_read("output_buffer")
-    wo_output_buffer = state.add_write("output_buffer")
+    w_output_buffer = state.add_write("output_buffer")
 
     sdfg.add_stream("output_stream",
                    dtype=dace.float32,
@@ -148,6 +146,11 @@ a_out = a_in
                           read_in,
                           dst_conn="a_in",
                           memlet=dace.Memlet("A_device[n, k]"))
+    state.add_memlet_path(r_a_reg,
+                          in_entry,
+                          read_in,
+                          dst_conn="a_reg_in",
+                          memlet=dace.Memlet("a_reg[0]"))
     state.add_memlet_path(read_in,
                           in_exit,
                           w_A_stream,
