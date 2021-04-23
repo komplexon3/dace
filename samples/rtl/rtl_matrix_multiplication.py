@@ -119,7 +119,7 @@ def make_fpga_state(sdfg):
     # In a map
     in_entry, in_exit = state.add_map(
         "in_map",
-        dict(n="0:N", k="0:K", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input a processing tasklet
@@ -156,7 +156,7 @@ a_reg_out = a
     # In b map
     in_b_entry, in_b_exit = state.add_map(
         "in_b_map",
-        dict(n="0:N", k="0:K", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input processing tasklet
@@ -181,7 +181,7 @@ b_out = b_in
     # In output buffer map
     in_buff_entry, in_buff_exit = state.add_map(
         "in_buff_map",
-        dict(n="0:N", k="0:K", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input processing tasklet
@@ -208,7 +208,7 @@ out_out = 0 if k == 0 else out_in
     # Map
     out_entry, out_exit = state.add_map(
         "out_map",
-        dict(n="0:N", k="0:K", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     proc_out = state.add_tasklet("proc_out", {"c_out"}, {"out_buf"}, "out_buf = c_out")
@@ -352,7 +352,6 @@ if __name__ == "__main__":
     C = np.ndarray([N.get(), M.get()], dtype=dace.float32.type)
     A[:] = np.random.rand(N.get(), K.get()).astype(dace.float32.type)
     B[:] = np.random.rand(K.get(), M.get()).astype(dace.float32.type)
-    C[:] = dace.float32(0)
 
     A_regression = np.ndarray([N.get(), K.get()], dtype=np.float32)
     B_regression = np.ndarray([K.get(), M.get()], dtype=np.float32)
