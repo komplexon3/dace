@@ -106,14 +106,6 @@ def make_fpga_state(sdfg):
     r_c_out_stream = state.add_read("c_out_stream")
     w_c_out_stream = state.add_write("c_out_stream")
 
-    sdfg.add_scalar("a_reg",
-                   dtype=dace.float32,
-                   transient=True,
-                   storage=dace.StorageType.FPGA_Local)
-    r_a_reg = state.add_read("a_reg")
-    w_a_reg = state.add_write("a_reg")
-
-
     ###########################################################################
     ### Process input 
     # In a map
@@ -124,12 +116,10 @@ def make_fpga_state(sdfg):
 
     # Input a processing tasklet
     read_in = state.add_tasklet("read_in",
-                                {"a_in", "a_reg_in"},
-                                {"a_out", "a_reg_out"},
+                                {"a_in"},
+                                {"a_out"},
                                 """
-a = a_in if m == 0 else a_reg_in # there is still always a read from the array in the generated code so this ternary statement can probably be omitted
-a_out = a
-a_reg_out = a
+a_out = a_in
                             """)
 
     state.add_memlet_path(A,
@@ -137,16 +127,6 @@ a_reg_out = a
                           read_in,
                           dst_conn="a_in",
                           memlet=dace.Memlet("A_device[n, k]"))
-    state.add_memlet_path(r_a_reg,
-                          in_entry,
-                          read_in,
-                          dst_conn="a_reg_in",
-                          memlet=dace.Memlet("a_reg[0]"))
-    state.add_memlet_path(read_in,
-                          in_exit,
-                          w_a_reg,
-                          src_conn="a_reg_out",
-                          memlet=dace.Memlet("a_reg[0]"))
     state.add_memlet_path(read_in,
                           in_exit,
                           w_A_stream,
@@ -189,7 +169,7 @@ b_out = b_in
                                 {"out_in"},
                                 {"out_out"},
                                 """
-out_out = 0 if k == 0 else out_in
+out_out=out_in
                                 """)
 
     state.add_memlet_path(r_output_buffer,
