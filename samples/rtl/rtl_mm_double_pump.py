@@ -10,6 +10,11 @@ N = dace.symbol("N")
 M = dace.symbol("M")
 K = dace.symbol("K")
 
+sdfg = dace.SDFG("rtl_mm_double_pump")
+
+# vectorization
+veclen = 2
+sdfg.add_constant('VECLEN', veclen)
 
 def make_copy_to_fpga_state(sdfg):
 
@@ -18,34 +23,30 @@ def make_copy_to_fpga_state(sdfg):
 
     state = sdfg.add_state("copy_to_device", is_start_state=True)
 
-    sdfg.add_array("A", [N, K], dtype=dace.float32)
-    sdfg.add_array("B", [K, M], dtype=dace.float32)
-    sdfg.add_array("C", [N, M], dtype=dace.float32)
+    sdfg.add_array("A", [N, K],
+                    dtype=dace.float32)
+    sdfg.add_array("B", [K, M // veclen],
+                    dtype=dace.vector(dace.float32, veclen))
+    sdfg.add_array("C", [N, M // veclen],
+                    dtype=dace.vector(dace.float32, veclen))
 
     A_host = state.add_read("A")
     B_host = state.add_read("B")
-    C_host = state.add_read("C")
 
     sdfg.add_array("A_device", [N, K],
                    dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
-    sdfg.add_array("B_device", [K, M],
-                   dtype=dace.float32,
-                   transient=True,
-                   storage=dace.StorageType.FPGA_Global)
-    sdfg.add_array("C_device", [N, M],
-                   dtype=dace.float32,
+    sdfg.add_array("B_device", [K, M // veclen],
+                   dtype=dace.vector(dace.float32, veclen),
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
 
     A_device = state.add_write("A_device")
     B_device = state.add_write("B_device")
-    C_device = state.add_write("C_device")
 
-    state.add_edge(A_host, None, A_device, None, dace.Memlet("A_device"))
-    state.add_edge(B_host, None, B_device, None, dace.Memlet("B_device"))
-    state.add_edge(C_host, None, C_device, None, dace.Memlet("C_device"))
+    state.add_memlet_path(A_host, A_device, memlet=dace.Memlet("A_device"))
+    state.add_memlet_path(B_host, B_device, memlet=dace.Memlet("B_device[0:K, 0:M//VECLEN]"))
 
     return state
 
@@ -60,7 +61,7 @@ def make_copy_to_host_state(sdfg):
     Output_buffer = state.add_read("output_buffer")
     C_host = state.add_write("C")
 
-    state.add_edge(Output_buffer, None, C_host, None, dace.Memlet("C"))
+    state.add_memlet_path(Output_buffer, C_host, memlet=dace.Memlet("C[0:N, 0:M//VECLEN]"))
 
     return state
 
@@ -72,35 +73,35 @@ def make_fpga_state(sdfg):
     B = state.add_read("B_device")
 
     sdfg.add_stream("A_stream",
-                   dace.float32,
+                    dtype=dace.vector(dace.float32, veclen),
                     transient=True,
                     storage=dace.StorageType.FPGA_Local)
     r_A_stream = state.add_read("A_stream")
     w_A_stream = state.add_write("A_stream")
 
     sdfg.add_stream("B_stream",
-                   dace.float32,
+                   dtype=dace.vector(dace.float32, veclen),
                    transient=True,
                    storage=dace.StorageType.FPGA_Local)
     r_B_stream = state.add_read("B_stream")
     w_B_stream = state.add_read("B_stream")
 
-    sdfg.add_array("output_buffer", [N,M],
-                   dtype=dace.float32,
+    sdfg.add_array("output_buffer", [N,M // veclen],
+                   dtype=dace.vector(dace.float32, veclen),
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
     r_output_buffer = state.add_read("output_buffer")
     w_output_buffer = state.add_write("output_buffer")
 
     sdfg.add_stream("output_stream",
-                   dtype=dace.float32,
+                   dtype=dace.vector(dace.float32, veclen),
                    transient=True,
                    storage=dace.StorageType.FPGA_Local)
     r_output_stream = state.add_read("output_stream")
     w_output_stream = state.add_write("output_stream")
 
     sdfg.add_stream("c_out_stream",
-                   dtype=dace.float32,
+                   dtype=dace.vector(dace.float32, veclen),
                    transient=True,
                    storage=dace.StorageType.FPGA_Local)
     r_c_out_stream = state.add_read("c_out_stream")
@@ -112,7 +113,7 @@ def make_fpga_state(sdfg):
     # In a map
     in_entry, in_exit = state.add_map(
         "in_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M//VECLEN"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input a processing tasklet
@@ -120,8 +121,11 @@ def make_fpga_state(sdfg):
                                 {"a_in"},
                                 {"a_out"},
                                 """
-a_out = a_in
-                            """)
+dace::vec<float, 2> a_vec;
+a_vec[0] = a_in;
+a_vec[1] = a_in;
+A_stream.push(a_vec);
+""", language=dace.Language.CPP)
 
     state.add_memlet_path(A,
                           in_entry,
@@ -137,7 +141,7 @@ a_out = a_in
     # In b map
     in_b_entry, in_b_exit = state.add_map(
         "in_b_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M//VECLEN"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input processing tasklet
@@ -162,7 +166,7 @@ b_out = b_in
     # In output buffer map
     in_buff_entry, in_buff_exit = state.add_map(
         "in_buff_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M//VECLEN"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input processing tasklet
@@ -189,7 +193,7 @@ out_out = out_in
     # Map
     out_entry, out_exit = state.add_map(
         "out_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+        dict(k="0:K", n="0:N", m="0:M//VECLEN"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     proc_out = state.add_tasklet("proc_out", {"c_out"}, {"out_buf"}, "out_buf = c_out")
@@ -250,9 +254,9 @@ out_out = out_in
         .mb_debug_sys_rst(0)
     );
 
-    wire        axis_a_dp_tvalid;
-    wire [31:0] axis_a_dp_tdata;
-    wire        axis_a_dp_tready;
+    wire        axis_a_dpclk_tvalid;
+    wire [63:0] axis_a_dpclk_tdata;
+    wire        axis_a_dpclk_tready;
 
     slow_to_fast_clk clock_sync_a (
         .s_axis_aclk(clk_sp),
@@ -261,17 +265,34 @@ out_out = out_in
         .m_axis_aresetn(rstn_dp),
 
         .s_axis_tvalid(s_axis_a_tvalid),
-        .s_axis_tdata( s_axis_a_tdata),
+        .s_axis_tdata(s_axis_a_tdata),
         .s_axis_tready(s_axis_a_tready),
 
+        .m_axis_tvalid(axis_a_dpclk_tvalid),
+        .m_axis_tdata(axis_a_dpclk_tdata),
+        .m_axis_tready(axis_a_dpclk_tready)
+    );
+
+    wire        axis_a_dp_tvalid;
+    wire [31:0] axis_a_dp_tdata;
+    wire        axis_a_dp_tready;
+
+    slow_to_fast_data data_issue_a (
+        .aclk(clk_dp),
+        .aresetn(rstn_dp),
+
+        .s_axis_tvalid(axis_a_dpclk_tvalid),
+        .s_axis_tdata(axis_a_dpclk_tdata),
+        .s_axis_tready(axis_a_dpclk_tready),
+
         .m_axis_tvalid(axis_a_dp_tvalid),
-        .m_axis_tdata( axis_a_dp_tdata),
+        .m_axis_tdata(axis_a_dp_tdata),
         .m_axis_tready(axis_a_dp_tready)
     );
 
-    wire        axis_b_dp_tvalid;
-    wire [31:0] axis_b_dp_tdata;
-    wire        axis_b_dp_tready;
+    wire        axis_b_dpclk_tvalid;
+    wire [63:0] axis_b_dpclk_tdata;
+    wire        axis_b_dpclk_tready;
 
     slow_to_fast_clk clock_sync_b (
         .s_axis_aclk(clk_sp),
@@ -280,11 +301,28 @@ out_out = out_in
         .m_axis_aresetn(rstn_dp),
 
         .s_axis_tvalid(s_axis_b_tvalid),
-        .s_axis_tdata( s_axis_b_tdata),
+        .s_axis_tdata(s_axis_b_tdata),
         .s_axis_tready(s_axis_b_tready),
 
+        .m_axis_tvalid(axis_b_dpclk_tvalid),
+        .m_axis_tdata(axis_b_dpclk_tdata),
+        .m_axis_tready(axis_b_dpclk_tready)
+    );
+
+    wire        axis_b_dp_tvalid;
+    wire [31:0] axis_b_dp_tdata;
+    wire        axis_b_dp_tready;
+
+    slow_to_fast_data data_issue_b (
+        .aclk(clk_dp),
+        .aresetn(rstn_dp),
+
+        .s_axis_tvalid(axis_b_dpclk_tvalid),
+        .s_axis_tdata(axis_b_dpclk_tdata),
+        .s_axis_tready(axis_b_dpclk_tready),
+
         .m_axis_tvalid(axis_b_dp_tvalid),
-        .m_axis_tdata( axis_b_dp_tdata),
+        .m_axis_tdata(axis_b_dp_tdata),
         .m_axis_tready(axis_b_dp_tready)
     );
 
@@ -324,11 +362,11 @@ out_out = out_in
         .m_axis_aresetn(rstn_dp),
 
         .s_axis_tvalid(s_axis_c_in_tvalid),
-        .s_axis_tdata( s_axis_c_in_tdata),
+        .s_axis_tdata(s_axis_c_in_tdata),
         .s_axis_tready(s_axis_c_in_tready),
 
         .m_axis_tvalid(axis_c_in_dp_tvalid),
-        .m_axis_tdata( axis_c_in_dp_tdata),
+        .m_axis_tdata(axis_c_in_dp_tdata),
         .m_axis_tready(axis_c_in_dp_tready)
     );
 
@@ -349,15 +387,32 @@ out_out = out_in
         .m_axis_result_tready(axis_c_out_dp_tready)
     );
 
+    wire        axis_c_out_dpclk_tvalid;
+    wire [63:0] axis_c_out_dpclk_tdata;
+    wire        axis_c_out_dpclk_tready;
+
+    fast_to_slow_data data_packer_c_out (
+        .aclk(clk_dp),
+        .aresetn(rstn_dp),
+
+        .s_axis_tvalid(axis_c_out_dp_tvalid),
+        .s_axis_tdata(axis_c_out_dp_tdata),
+        .s_axis_tready(axis_c_out_dp_tready),
+
+        .m_axis_tvalid(axis_c_out_dpclk_tvalid),
+        .m_axis_tdata(axis_c_out_dpclk_tdata),
+        .m_axis_tready(axis_c_out_dpclk_tready)
+    );
+
     fast_to_slow_clk clock_sync_result (
         .s_axis_aclk(clk_dp),
         .s_axis_aresetn(rstn_dp),
         .m_axis_aclk(clk_sp),
         .m_axis_aresetn(rstn_sp),
 
-        .s_axis_tvalid(axis_c_out_dp_tvalid),
-        .s_axis_tdata(axis_c_out_dp_tdata),
-        .s_axis_tready(axis_c_out_dp_tready),
+        .s_axis_tvalid(axis_c_out_dpclk_tvalid),
+        .s_axis_tdata(axis_c_out_dpclk_tdata),
+        .s_axis_tready(axis_c_out_dpclk_tready),
 
         .m_axis_tvalid(m_axis_c_out_tvalid),
         .m_axis_tdata(m_axis_c_out_tdata),
@@ -425,14 +480,26 @@ out_out = out_in
 
     rtl_tasklet.add_ip_core('slow_to_fast_clk', 'axis_clock_converter',
                             'xilinx.com', '1.1', {
-                                "CONFIG.TDATA_NUM_BYTES": "4",
+                                "CONFIG.TDATA_NUM_BYTES": "8",
                                 "CONFIG.SYNCHRONIZATION_STAGES": "4"
                             })
 
     rtl_tasklet.add_ip_core('fast_to_slow_clk', 'axis_clock_converter',
                             'xilinx.com', '1.1', {
-                                "CONFIG.TDATA_NUM_BYTES": "4",
+                                "CONFIG.TDATA_NUM_BYTES": "8",
                                 "CONFIG.SYNCHRONIZATION_STAGES": "4"
+                            })
+
+    rtl_tasklet.add_ip_core('slow_to_fast_data', 'axis_dwidth_converter',
+                            'xilinx.com', '1.1', {
+                                "CONFIG.S_TDATA_NUM_BYTES": "8",
+                                "CONFIG.M_TDATA_NUM_BYTES": "4"
+                            })
+
+    rtl_tasklet.add_ip_core('fast_to_slow_data', 'axis_dwidth_converter',
+                            'xilinx.com', '1.1', {
+                                "CONFIG.S_TDATA_NUM_BYTES": "4",
+                                "CONFIG.M_TDATA_NUM_BYTES": "8"
                             })
 
     # Connecting RTL Tasklet
@@ -448,8 +515,6 @@ out_out = out_in
 
 
 def make_sdfg():
-
-    sdfg = dace.SDFG("rtl_mm_double_pump")
 
     pre_state = make_copy_to_fpga_state(sdfg)
     compute_state = make_fpga_state(sdfg)
