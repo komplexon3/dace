@@ -24,7 +24,6 @@ def make_copy_to_fpga_state(sdfg):
 
     A_host = state.add_read("A")
     B_host = state.add_read("B")
-    C_host = state.add_read("C")
 
     sdfg.add_array("A_device", [N, K],
                    dtype=dace.float32,
@@ -34,18 +33,12 @@ def make_copy_to_fpga_state(sdfg):
                    dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
-    sdfg.add_array("C_device", [N, M],
-                   dtype=dace.float32,
-                   transient=True,
-                   storage=dace.StorageType.FPGA_Global)
 
     A_device = state.add_write("A_device")
     B_device = state.add_write("B_device")
-    C_device = state.add_write("C_device")
 
     state.add_edge(A_host, None, A_device, None, dace.Memlet("A_device"))
     state.add_edge(B_host, None, B_device, None, dace.Memlet("B_device"))
-    state.add_edge(C_host, None, C_device, None, dace.Memlet("C_device"))
 
     return state
 
@@ -72,14 +65,14 @@ def make_fpga_state(sdfg):
     B = state.add_read("B_device")
 
     sdfg.add_stream("A_stream",
-                   dace.float32,
+                    dtype=dace.float32,
                     transient=True,
                     storage=dace.StorageType.FPGA_Local)
     r_A_stream = state.add_read("A_stream")
     w_A_stream = state.add_write("A_stream")
 
     sdfg.add_stream("B_stream",
-                   dace.float32,
+                   dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Local)
     r_B_stream = state.add_read("B_stream")
