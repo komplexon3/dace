@@ -73,7 +73,7 @@ def make_fpga_state(sdfg):
     B = state.add_read("B_device")
 
     sdfg.add_stream("A_stream",
-                    dtype=dace.vector(dace.float32, veclen),
+                    dtype=dace.float32,
                     transient=True,
                     storage=dace.StorageType.FPGA_Local)
     r_A_stream = state.add_read("A_stream")
@@ -121,11 +121,8 @@ def make_fpga_state(sdfg):
                                 {"a_in"},
                                 {"a_out"},
                                 """
-dace::vec<float, 2> a_vec;
-a_vec[0] = a_in;
-a_vec[1] = a_in;
-A_stream.push(a_vec);
-""", language=dace.Language.CPP)
+a_out = a_in
+                                """)
 
     state.add_memlet_path(A,
                           in_entry,
@@ -223,7 +220,6 @@ out_out = out_in
         outputs={"c_out"},
         code='''
     assign ap_done = 1; // free-running
-    wire ap_aresetn = ~ap_areset;
 
     wire clk_sp;
     wire clk_dp;
@@ -254,6 +250,16 @@ out_out = out_in
         .mb_debug_sys_rst(0)
     );
 
+    // Doubeling the a stream to issue at double freq
+    wire        axis_a_tvalid;
+    wire [63:0] axis_a_tdata;
+    wire        axis_a_tready;
+
+    assign axis_a_tvalid = s_axis_a_tvalid;
+    assign axis_a_tdata = {s_axis_a_tdata, s_axis_a_tdata};
+    assign s_axis_a_tready = axis_a_tready;
+
+
     wire        axis_a_dpclk_tvalid;
     wire [63:0] axis_a_dpclk_tdata;
     wire        axis_a_dpclk_tready;
@@ -264,9 +270,9 @@ out_out = out_in
         .m_axis_aclk(clk_dp),
         .m_axis_aresetn(rstn_dp),
 
-        .s_axis_tvalid(s_axis_a_tvalid),
-        .s_axis_tdata(s_axis_a_tdata),
-        .s_axis_tready(s_axis_a_tready),
+        .s_axis_tvalid(axis_a_tvalid),
+        .s_axis_tdata(axis_a_tdata),
+        .s_axis_tready(axis_a_tready),
 
         .m_axis_tvalid(axis_a_dpclk_tvalid),
         .m_axis_tdata(axis_a_dpclk_tdata),
@@ -347,13 +353,9 @@ out_out = out_in
         .m_axis_result_tready(axis_ab_tready)
     );
 
-    wire        axis_c_out_dp_tvalid;
-    wire [31:0] axis_c_out_dp_tdata;
-    wire        axis_c_out_dp_tready;
-
-    wire        axis_c_in_dp_tvalid;
-    wire [31:0] axis_c_in_dp_tdata;
-    wire        axis_c_in_dp_tready;
+    wire        axis_c_in_dpclk_tvalid;
+    wire [63:0] axis_c_in_dpclk_tdata;
+    wire        axis_c_in_dpclk_tready;
 
     slow_to_fast_clk clock_sync_c_in (
         .s_axis_aclk(clk_sp),
@@ -365,10 +367,31 @@ out_out = out_in
         .s_axis_tdata(s_axis_c_in_tdata),
         .s_axis_tready(s_axis_c_in_tready),
 
+        .m_axis_tvalid(axis_c_in_dpclk_tvalid),
+        .m_axis_tdata(axis_c_in_dpclk_tdata),
+        .m_axis_tready(axis_c_in_dpclk_tready)
+    );
+
+    wire        axis_c_in_dp_tvalid;
+    wire [31:0] axis_c_in_dp_tdata;
+    wire        axis_c_in_dp_tready;
+
+    slow_to_fast_data data_issue_c (
+        .aclk(clk_dp),
+        .aresetn(rstn_dp),
+
+        .s_axis_tvalid(axis_c_in_dpclk_tvalid),
+        .s_axis_tdata(axis_c_in_dpclk_tdata),
+        .s_axis_tready(axis_c_in_dpclk_tready),
+
         .m_axis_tvalid(axis_c_in_dp_tvalid),
         .m_axis_tdata(axis_c_in_dp_tdata),
         .m_axis_tready(axis_c_in_dp_tready)
     );
+
+    wire        axis_c_out_dp_tvalid;
+    wire [31:0] axis_c_out_dp_tdata;
+    wire        axis_c_out_dp_tready;
 
     floating_point_add fl_add (
         .aclk(clk_dp),
@@ -472,22 +495,26 @@ out_out = out_in
             "CONFIG.MMCM_CLKOUT0_DIVIDE_F": "4",
             "CONFIG.MMCM_CLKOUT1_DIVIDE": "2",
             "CONFIG.NUM_OUT_CLKS": "2",
+            "CONFIG.CLKOUT1_JITTER": "81.814",
+            "CONFIG.CLKOUT1_PHASE_ERROR": "77.836",
+            "CONFIG.CLKOUT2_JITTER": "71.438",
+            "CONFIG.CLKOUT2_PHASE_ERROR": "77.836",
             "CONFIG.AUTO_PRIMITIVE": "PLL"
         })
-
+    
     rtl_tasklet.add_ip_core('rst_clk_wiz', 'proc_sys_reset', 'xilinx.com', '5.0',
                             {})
 
     rtl_tasklet.add_ip_core('slow_to_fast_clk', 'axis_clock_converter',
                             'xilinx.com', '1.1', {
                                 "CONFIG.TDATA_NUM_BYTES": "8",
-                                "CONFIG.SYNCHRONIZATION_STAGES": "4"
+                                "CONFIG.SYNCHRONIZATION_STAGES": "8"
                             })
 
     rtl_tasklet.add_ip_core('fast_to_slow_clk', 'axis_clock_converter',
                             'xilinx.com', '1.1', {
                                 "CONFIG.TDATA_NUM_BYTES": "8",
-                                "CONFIG.SYNCHRONIZATION_STAGES": "4"
+                                "CONFIG.SYNCHRONIZATION_STAGES": "8"
                             })
 
     rtl_tasklet.add_ip_core('slow_to_fast_data', 'axis_dwidth_converter',
