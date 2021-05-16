@@ -302,7 +302,46 @@ def make_sdfg():
     return sdfg
 
 
+def probe_max_freq():
+    from dace.codegen import exceptions as cgx
+    
+    min = 300
+    max = 1000
+
+    print(f"=== Building SDFG - {min} to {max} ===")
+    sdfg = make_sdfg()
+
+    print(f"=== Start Probing - {min} to {max} ===")
+
+    while max-min > 1:
+        print(f"### Current range: {min} to {max} ###")
+        testing = (min+max)//2
+        dace.Config.set('compiler', 'xilinx', 'frequency', value=str(testing))
+        print (f"~~~~ Test Frequency: {testing} ~~~")
+        try:
+            sdfg.compile()
+            min = testing
+            print (f"+++ Success for: {testing} +++")
+        except cgx.CompilationError: 
+            max = testing
+            print (f"--- Failure for: {testing} ---")
+        except: 
+            print (f"!!! Unexpected error for: {testing} !!!")
+            print(f"Error:", sys.exc_info()[0])
+            raise
+
 if __name__ == "__main__":
+    #print("==== Probing max freq ====")
+    #probe_max_freq()
+
+    #sdfg = make_sdfg()
+    #testing = 1000 #(min+max)//2
+    #dace.Config.set('compiler', 'xilinx', 'frequency', value=str(testing))
+    #print (f"~~~~ Test Frequency: {testing} ~~~")
+    #print(dace.Config.get('compiler', 'xilinx', 'frequency'))
+    #sdfg.compile()
+    #print(dace.Config.get('compiler', 'xilinx', 'frequency'))
+
     print("==== Program start ====")
 
     parser = argparse.ArgumentParser()
@@ -340,4 +379,3 @@ if __name__ == "__main__":
         raise ValueError(f"Verification failed, difference: {diff}")
     else:
         print("Results successfully verified.")
-
