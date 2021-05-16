@@ -1,4 +1,30 @@
 # Copyright 2019-2021 ETH Zurich and the DaCe authors. All rights reserved.
+#
+#                    s_axis_b
+#                       │
+#             s_axis_a  │
+#                │      │
+#   ap_aclk      │      │
+#      │         │      │
+#      │     ┌───▼──────▼───┐
+#      │     │              │
+#      ├────►│  Multiplier  │
+#      │     │              │
+#      │     └───────┬──────┘
+#      │             │
+#      │             │  s_axis_c_in
+#      │             │     │
+#      │         ┌───▼─────▼───┐
+#      │         │             │
+#      └────────►│   Adder     │
+#                │             │
+#                └─────┬───────┘
+#                      │
+#                      │
+#                      │
+#                      ▼
+#                 m_axis_c_out
+
 import argparse
 import dace
 import numpy as np
