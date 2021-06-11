@@ -26,6 +26,7 @@
 #                 m_axis_c_out
 
 import argparse
+from dace import memlet
 import dace
 import numpy as np
 import pdb
@@ -59,6 +60,10 @@ def make_copy_to_fpga_state(sdfg):
                    dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
+    sdfg.add_array("C_device", [N, M],
+                   dtype=dace.float32,
+                   transient=True,
+                   storage=dace.StorageType.FPGA_Global)
 
     A_device = state.add_write("A_device")
     B_device = state.add_write("B_device")
@@ -76,10 +81,10 @@ def make_copy_to_host_state(sdfg):
 
     state = sdfg.add_state("copy_to_host")
 
-    Output_buffer = state.add_read("buffer")
+    C_device = state.add_read("C_device")
     C_host = state.add_write("C")
 
-    state.add_edge(Output_buffer, None, C_host, None, dace.Memlet("C"))
+    state.add_edge(C_device, None, C_host, None, dace.Memlet("C"))
 
     return state
 
@@ -89,6 +94,7 @@ def make_fpga_state(sdfg):
 
     A = state.add_read("A_device")
     B = state.add_read("B_device")
+    C = state.add_write("C_device")
 
     sdfg.add_stream("A_stream",
                     dtype=dace.float32,
@@ -104,7 +110,14 @@ def make_fpga_state(sdfg):
     r_B_stream = state.add_read("B_stream")
     w_B_stream = state.add_read("B_stream")
 
-    sdfg.add_array("buffer", [N,M],
+    sdfg.add_stream("C_stream",
+                   dtype=dace.float32,
+                   transient=True,
+                   storage=dace.StorageType.FPGA_Local)
+    r_C_stream = state.add_read("C_stream")
+    w_C_stream = state.add_read("C_stream")
+
+    sdfg.add_array("buffer", [M],
                    dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
@@ -130,66 +143,47 @@ def make_fpga_state(sdfg):
     # In a map
     in_entry, in_exit = state.add_map(
         "in_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+        dict(n="0:N", k="0:K", m="0:M"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input a processing tasklet
-    read_a_in = state.add_tasklet("read_a_in",
-                                {"a_in"},
-                                {"a_out"},
+    read_ab_in = state.add_tasklet("read_ab_in",
+                                {"a_in", "b_in"},
+                                {"a_out", "b_out"},
                                 """
 a_out = a_in
+b_out = b_in
                             """)
 
     state.add_memlet_path(A,
                           in_entry,
-                          read_a_in,
+                          read_ab_in,
                           dst_conn="a_in",
                           memlet=dace.Memlet("A_device[n, k]"))
-<<<<<<< HEAD
-    state.add_memlet_path(r_a_reg,
-                          in_entry,
-                          read_in,
-                          dst_conn="a_reg_in",
-                          memlet=dace.Memlet("a_reg[0]"))
-    state.add_memlet_path(read_in,
-=======
-    state.add_memlet_path(read_a_in,
->>>>>>> just stuff
+    state.add_memlet_path(read_ab_in,
                           in_exit,
                           w_A_stream,
                           src_conn="a_out",
                           memlet=dace.Memlet("A_stream[0]"))
-
-    # In b map
-    in_b_entry, in_b_exit = state.add_map(
-        "in_b_map",
-        dict(k="0:K", n="0:N", m="0:M"),
-        schedule=dace.ScheduleType.FPGA_Device)
-
-    # Input processing tasklet
-    read_b_in = state.add_tasklet("read_b_in",
-                                {"b_in"},
-                                {"b_out"},
-                                """
-b_out = b_in
-                                """)
-
     state.add_memlet_path(B,
-                          in_b_entry,
-                          read_b_in,
+                          in_entry,
+                          read_ab_in,
                           dst_conn="b_in",
-                          memlet=dace.Memlet("B_device[k, m]"))
-    state.add_memlet_path(read_b_in,
-                          in_b_exit,
+                          memlet=dace.Memlet("B_device[n, k]"))
+    state.add_memlet_path(read_ab_in,
+                          in_exit,
                           w_B_stream,
                           src_conn="b_out",
                           memlet=dace.Memlet("B_stream[0]"))
 
     # In output buffer map
-    in_buff_entry, in_buff_exit = state.add_map(
-        "in_buff_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+    in_buff_outer_entry, in_buff_outer_exit = state.add_map(
+        "in_buff_outer_map",
+        dict(n="0:N"),
+        schedule=dace.ScheduleType.FPGA_Device)
+    in_buff_inner_entry, in_buff_inner_exit = state.add_map(
+        "in_buff_outer_map",
+        dict(k="0:K", m="0:M"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input processing tasklet
@@ -200,13 +194,17 @@ b_out = b_in
 out_out=out_in
                                 """)
 
+    state.add_memlet_path(in_buff_outer_entry,
+                          r_buffer,
+                          memlet=dace.Memlet())
     state.add_memlet_path(r_buffer,
-                          in_buff_entry,
+                          in_buff_inner_entry,
                           read_buff_in,
                           dst_conn="out_in",
-                          memlet=dace.Memlet("buffer[n,m]"))
+                          memlet=dace.Memlet("buffer[m]"))
     state.add_memlet_path(read_buff_in,
-                          in_buff_exit,
+                          in_buff_inner_exit,
+                          in_buff_outer_exit,
                           w_buffer_stream,
                           src_conn="out_out",
                           memlet=dace.Memlet("buffer_stream[0]"))
@@ -214,23 +212,42 @@ out_out=out_in
     ###########################################################################
     ### Process c_out -> output buffer 
     # Map
-    out_entry, out_exit = state.add_map(
+    out_outer_entry, out_outer_exit = state.add_map(
+        "out_outer_map",
+        dict(n="0:N"),
+        schedule=dace.ScheduleType.FPGA_Device)
+    out_inner_entry, out_inner_exit = state.add_map(
         "out_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+        dict(k="0:K", m="0:M"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     proc_out = state.add_tasklet("proc_out", {"c_out"}, {"out_buf"}, "out_buf = c_out")
 
     state.add_memlet_path(r_c_out_stream,
-                          out_entry,
+                          out_outer_entry,
+                          out_inner_entry,
                           proc_out,
                           dst_conn="c_out",
                           memlet=dace.Memlet("c_out_stream[0]"))
+    state.add_memlet_path(out_outer_entry,
+                          out_inner_entry,
+                          out_inner_exit,
+                          w_buffer,
+                          memlet=dace.Memlet())
     state.add_memlet_path(proc_out,
-                          out_exit,
+                          out_inner_exit,
                           w_buffer,
                           src_conn="out_buf",
-                          memlet=dace.Memlet("buffer[n,m]"))
+                          memlet=dace.Memlet("buffer[m]"))
+    state.add_memlet_path(w_buffer,
+                          out_outer_exit,
+                          w_C_stream,
+                          memlet=dace.Memlet("buffer[0:M]"))
+    
+    # To C Pipe
+    state.add_memlet_path(r_C_stream,
+                          C,
+                          memlet=dace.Memlet("C_device"))
 
     ###########################################################################
     # Multiply accumulate RTL tasklet
@@ -325,10 +342,10 @@ out_out=out_in
 
 def make_sdfg():
 
-    sdfg = dace.SDFG("rtl_matrix_multiplication")
+    sdfg = dace.SDFG("rtl_matrix_multiplication_m")
 
     pre_state = make_copy_to_fpga_state(sdfg)
-    compute_state = make_
+    compute_state = make_fpga_state(sdfg)
     post_state = make_copy_to_host_state(sdfg)
 
     sdfg.add_edge(pre_state, compute_state, dace.InterstateEdge())
@@ -388,7 +405,9 @@ if __name__ == "__main__":
     M.set(args["M"])
     N.set(args["N"])
     K.set(args["K"])
+
     sdfg = make_sdfg()
+    sdfg.specialize(dict(M=M))
 
     print("Matrix multiplication {}x{}x{}".format(
         M.get(), N.get(), K.get()))
@@ -407,7 +426,7 @@ if __name__ == "__main__":
     B_regression[:] = B[:]
     C_regression[:] = C[:]
 
-    sdfg(A=A, B=B, C=C, M=M, N=N, K=K)
+    sdfg(A=A, B=B, C=C, N=N, K=K)
 
     diff = np.linalg.norm((A @ B) - C) / float(M.get() * K.get())
     if diff > 1e-6:

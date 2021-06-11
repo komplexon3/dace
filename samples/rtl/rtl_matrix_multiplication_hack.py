@@ -76,7 +76,7 @@ def make_copy_to_host_state(sdfg):
 
     state = sdfg.add_state("copy_to_host")
 
-    Output_buffer = state.add_read("buffer")
+    Output_buffer = state.add_read("output_buffer")
     C_host = state.add_write("C")
 
     state.add_edge(Output_buffer, None, C_host, None, dace.Memlet("C"))
@@ -104,19 +104,19 @@ def make_fpga_state(sdfg):
     r_B_stream = state.add_read("B_stream")
     w_B_stream = state.add_read("B_stream")
 
-    sdfg.add_array("buffer", [N,M],
+    sdfg.add_array("output_buffer", [N,M],
                    dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Global)
-    r_buffer = state.add_read("buffer")
-    w_buffer = state.add_write("buffer")
+    r_output_buffer = state.add_read("output_buffer")
+    w_output_buffer = state.add_write("output_buffer")
 
-    sdfg.add_stream("buffer_stream",
+    sdfg.add_stream("output_stream",
                    dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Local)
-    r_buffer_stream = state.add_read("buffer_stream")
-    w_buffer_stream = state.add_write("buffer_stream")
+    r_output_stream = state.add_read("output_stream")
+    w_output_stream = state.add_write("output_stream")
 
     sdfg.add_stream("c_out_stream",
                    dtype=dace.float32,
@@ -130,11 +130,11 @@ def make_fpga_state(sdfg):
     # In a map
     in_entry, in_exit = state.add_map(
         "in_map",
-        dict(k="0:K", n="0:N", m="0:M"),
+        dict(k="0:K", n="0:N"),
         schedule=dace.ScheduleType.FPGA_Device)
 
     # Input a processing tasklet
-    read_a_in = state.add_tasklet("read_a_in",
+    read_in = state.add_tasklet("read_in",
                                 {"a_in"},
                                 {"a_out"},
                                 """
@@ -143,19 +143,10 @@ a_out = a_in
 
     state.add_memlet_path(A,
                           in_entry,
-                          read_a_in,
+                          read_in,
                           dst_conn="a_in",
                           memlet=dace.Memlet("A_device[n, k]"))
-<<<<<<< HEAD
-    state.add_memlet_path(r_a_reg,
-                          in_entry,
-                          read_in,
-                          dst_conn="a_reg_in",
-                          memlet=dace.Memlet("a_reg[0]"))
     state.add_memlet_path(read_in,
-=======
-    state.add_memlet_path(read_a_in,
->>>>>>> just stuff
                           in_exit,
                           w_A_stream,
                           src_conn="a_out",
@@ -200,16 +191,16 @@ b_out = b_in
 out_out=out_in
                                 """)
 
-    state.add_memlet_path(r_buffer,
+    state.add_memlet_path(r_output_buffer,
                           in_buff_entry,
                           read_buff_in,
                           dst_conn="out_in",
-                          memlet=dace.Memlet("buffer[n,m]"))
+                          memlet=dace.Memlet("output_buffer[n,m]"))
     state.add_memlet_path(read_buff_in,
                           in_buff_exit,
-                          w_buffer_stream,
+                          w_output_stream,
                           src_conn="out_out",
-                          memlet=dace.Memlet("buffer_stream[0]"))
+                          memlet=dace.Memlet("output_stream[0]"))
 
     ###########################################################################
     ### Process c_out -> output buffer 
@@ -228,9 +219,9 @@ out_out=out_in
                           memlet=dace.Memlet("c_out_stream[0]"))
     state.add_memlet_path(proc_out,
                           out_exit,
-                          w_buffer,
+                          w_output_buffer,
                           src_conn="out_buf",
-                          memlet=dace.Memlet("buffer[n,m]"))
+                          memlet=dace.Memlet("output_buffer[n,m]"))
 
     ###########################################################################
     # Multiply accumulate RTL tasklet
@@ -246,6 +237,28 @@ out_out=out_in
     assign ap_done = 1; // free-running
     wire ap_aresetn = ~ap_areset;
 
+    wire        axis_a_tvalid;
+    wire [31:0] axis_a_tdata;
+    reg        axis_a_tready;
+
+    assign axis_a_tdata = s_axis_a_tdata;
+    assign axis_a_tvalid = s_axis_a_tvalid;
+
+    integer count;
+
+    always@(posedge ap_aclk) begin
+        if (ap_areset) begin
+            count <= 0;
+            s_axis_a_tready <= 1'b0;
+        end else if (s_axis_a_tvalid && axis_a_tready) begin
+            count <= count + 1;
+            s_axis_a_tready <= 1'b0;
+        end else if (s_axis_a_tvalid && axis_a_tready && count >= M) begin
+            count <= 0;
+            s_axis_a_tready <= 1'b1;
+        end
+    end
+
     wire        axis_ab_tvalid;
     wire [31:0] axis_ab_tdata;
     wire        axis_ab_tready;
@@ -254,9 +267,9 @@ out_out=out_in
         .aclk(ap_aclk),
         .aresetn(ap_aresetn),
 
-        .s_axis_a_tvalid(s_axis_a_tvalid),
-        .s_axis_a_tdata(s_axis_a_tdata),
-        .s_axis_a_tready(s_axis_a_tready),
+        .s_axis_a_tvalid(axis_a_tvalid),
+        .s_axis_a_tdata(axis_a_tdata),
+        .s_axis_a_tready(axis_a_tready),
 
         .s_axis_b_tvalid(s_axis_b_tvalid),
         .s_axis_b_tdata(s_axis_b_tdata),
@@ -315,7 +328,7 @@ out_out=out_in
     # In
     state.add_edge(r_A_stream, None, rtl_tasklet, "a", dace.Memlet("A_stream[0]"))
     state.add_edge(r_B_stream, None, rtl_tasklet, "b", dace.Memlet("B_stream[0]"))
-    state.add_edge(r_buffer_stream, None, rtl_tasklet, "c_in", dace.Memlet("buffer_stream[0]"))
+    state.add_edge(r_output_stream, None, rtl_tasklet, "c_in", dace.Memlet("output_stream[0]"))
 
     # Out
     state.add_edge(rtl_tasklet, "c_out", w_c_out_stream, None, dace.Memlet("c_out_stream[0]"))
@@ -328,7 +341,7 @@ def make_sdfg():
     sdfg = dace.SDFG("rtl_matrix_multiplication")
 
     pre_state = make_copy_to_fpga_state(sdfg)
-    compute_state = make_
+    compute_state = make_fpga_state(sdfg)
     post_state = make_copy_to_host_state(sdfg)
 
     sdfg.add_edge(pre_state, compute_state, dace.InterstateEdge())
@@ -341,7 +354,7 @@ def probe_max_freq():
     from dace.codegen import exceptions as cgx
     
     min = 300
-    max = 1000
+    max = 650
 
     print(f"=== Building SDFG - {min} to {max} ===")
     sdfg = make_sdfg()
@@ -379,6 +392,9 @@ if __name__ == "__main__":
 
     print("==== Program start ====")
 
+    print("Setting to hw emu")
+    dace.Config.set('compiler', 'xilinx', 'mode', value='hardware_emulation')
+
     parser = argparse.ArgumentParser()
     parser.add_argument("M", type=int)
     parser.add_argument("N", type=int)
@@ -389,6 +405,7 @@ if __name__ == "__main__":
     N.set(args["N"])
     K.set(args["K"])
     sdfg = make_sdfg()
+    sdfg.specialize(dict(M=M))
 
     print("Matrix multiplication {}x{}x{}".format(
         M.get(), N.get(), K.get()))
@@ -403,11 +420,27 @@ if __name__ == "__main__":
     A_regression = np.ndarray([N.get(), K.get()], dtype=np.float32)
     B_regression = np.ndarray([K.get(), M.get()], dtype=np.float32)
     C_regression = np.ndarray([N.get(), M.get()], dtype=np.float32)
-    A_regression[:] = A[:]
-    B_regression[:] = B[:]
+    A[:] = [
+        [dace.float32(1),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0)],
+        [dace.float32(0),dace.float32(1),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0)],
+        [dace.float32(0),dace.float32(0),dace.float32(1),dace.float32(0),dace.float32(0),dace.float32(0)],
+        [dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(1),dace.float32(0),dace.float32(0)],
+        [dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(1),dace.float32(0)],
+        [dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(1)]
+    ]
+#   A[:] = np.random.rand(N.get(), K.get()).astype(dace.float32.type)
+    B[:] = [
+        [dace.float32(1), dace.float32(2), dace.float32(3), dace.float32(4), dace.float32(5), dace.float32(6)],
+        [dace.float32(7), dace.float32(8), dace.float32(9), dace.float32(10), dace.float32(11), dace.float32(12)],
+        [dace.float32(13), dace.float32(14), dace.float32(15), dace.float32(16), dace.float32(17), dace.float32(18)],
+        [dace.float32(19), dace.float32(20), dace.float32(21), dace.float32(22), dace.float32(23), dace.float32(24)],
+        [dace.float32(25), dace.float32(26), dace.float32(27), dace.float32(28), dace.float32(29), dace.float32(30)],
+        [dace.float32(31), dace.float32(32), dace.float32(33), dace.float32(34), dace.float32(35), dace.float32(36)]
+    ]
+#   B[:] = np.random.rand(K.get(), M.get()).astype(dace.float32.type)
     C_regression[:] = C[:]
 
-    sdfg(A=A, B=B, C=C, M=M, N=N, K=K)
+    sdfg(A=A, B=B, C=C, N=N, K=K)
 
     diff = np.linalg.norm((A @ B) - C) / float(M.get() * K.get())
     if diff > 1e-6:

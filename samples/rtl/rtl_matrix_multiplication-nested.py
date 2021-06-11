@@ -2,13 +2,128 @@
 import argparse
 import dace
 import numpy as np
-import pdb
-import select
-import sys
 
 N = dace.symbol("N")
 M = dace.symbol("M")
 K = dace.symbol("K")
+
+
+def make_rtl_taskled_sdfg():
+    sdfg = dace.SDFG("nested_rtl")
+    state = sdfg.add_state()
+
+    sdfg.add_stream("rtl_A_stream",
+                    dtype=dace.float32,
+                    transient=False,
+                    storage=dace.StorageType.FPGA_Local)
+    r_A_stream = state.add_read("rtl_A_stream")
+
+    sdfg.add_stream("rtl_B_stream",
+                   dtype=dace.float32,
+                   transient=False,
+                   storage=dace.StorageType.FPGA_Local)
+    r_B_stream = state.add_read("rtl_B_stream")
+
+    sdfg.add_scalar("rtl_C_in_stream",
+                   dtype=dace.float32,
+                   transient=False,
+                   storage=dace.StorageType.FPGA_Local)
+    r_C_in_stream = state.add_read("rtl_C_in_stream")
+
+    sdfg.add_scalar("rtl_C_out_stream",
+                   dtype=dace.float32,
+                   transient=False,
+                   storage=dace.StorageType.FPGA_Local)
+    w_C_out_stream = state.add_write("rtl_C_out_stream")
+
+#    rtl_tasklet = state.add_tasklet(
+#        name="rtl_ma",
+#        inputs={"a", "b", "c_in"},
+#        outputs={"c_out"},
+#        code='''
+#    assign ap_done = 1; // free-running
+#    wire ap_aresetn = ~ap_areset;
+
+#    wire        axis_ab_tvalid;
+#    wire [31:0] axis_ab_tdata;
+#    wire        axis_ab_tready;
+
+#    floating_point_mult fl_mult (
+#        .aclk(ap_aclk),
+#        .aresetn(ap_aresetn),
+
+#        .s_axis_a_tvalid(s_axis_a_tvalid),
+#        .s_axis_a_tdata(s_axis_a_tdata),
+#        .s_axis_a_tready(s_axis_a_tready),
+
+#        .s_axis_b_tvalid(s_axis_b_tvalid),
+#        .s_axis_b_tdata(s_axis_b_tdata),
+#        .s_axis_b_tready(s_axis_b_tready),
+
+#        .m_axis_result_tvalid(axis_ab_tvalid),
+#        .m_axis_result_tdata(axis_ab_tdata),
+#        .m_axis_result_tready(axis_ab_tready)
+#    );
+
+#    floating_point_add fl_add (
+#        .aclk(ap_aclk),
+#        .aresetn(ap_aresetn),
+
+#        .s_axis_a_tvalid(s_axis_c_in_tvalid),
+#        .s_axis_a_tdata(s_axis_c_in_tdata),
+#        .s_axis_a_tready(s_axis_c_in_tready),
+
+#        .s_axis_b_tvalid(axis_ab_tvalid),
+#        .s_axis_b_tdata(axis_ab_tdata),
+#        .s_axis_b_tready(axis_ab_tready),
+
+#        .m_axis_result_tvalid(m_axis_c_out_tvalid),
+#        .m_axis_result_tdata(m_axis_c_out_tdata),
+#        .m_axis_result_tready(m_axis_c_out_tready)
+#    );
+
+#''', language=dace.Language.SystemVerilog)
+
+#    rtl_tasklet.add_ip_core(
+#    'floating_point_mult', 'floating_point', 'xilinx.com', '7.1', {
+#        "CONFIG.Operation_Type": "Multiply",
+#        "CONFIG.C_Mult_Usage": "Max_Usage",
+#        "CONFIG.Axi_Optimize_Goal": "Performance",
+#        "CONFIG.A_Precision_Type": "Single",
+#        "CONFIG.C_A_Exponent_Width": "8",
+#        "CONFIG.C_A_Fraction_Width": "24",
+#        "CONFIG.Result_Precision_Type": "Single",
+#        "CONFIG.C_Result_Exponent_Width": "8",
+#        "CONFIG.C_Result_Fraction_Width": "24",
+#        "CONFIG.C_Latency": "9",
+#        "CONFIG.C_Rate": "1",
+#        'CONFIG.Has_ARESETn': 'true',
+#        "CONFIG.Flow_Control": "Blocking"
+#    })
+
+#    rtl_tasklet.add_ip_core(
+#    'floating_point_add', 'floating_point', 'xilinx.com', '7.1', {
+#        "CONFIG.Add_Sub_Value": "Add",
+#        "CONFIG.Axi_Optimize_Goal": "Performance",
+#        'CONFIG.Has_ARESETn': 'true',
+#        "CONFIG.Flow_Control": "Blocking"
+#    })
+
+    rtl_tasklet = state.add_tasklet(
+        "multiply_accumulate", {"a", "b", "c_in"},
+        {"c_out"}, """\
+c_out = c_in + a * b""")
+
+    # Connecting RTL Tasklet
+    # In
+    state.add_edge(r_A_stream, None, rtl_tasklet, "a", dace.Memlet("rtl_A_stream"))
+    state.add_edge(r_B_stream, None, rtl_tasklet, "b", dace.Memlet("rtl_B_stream"))
+    state.add_edge(r_C_in_stream, None, rtl_tasklet, "c_in", dace.Memlet("rtl_C_in_stream"))
+
+    # Out
+    state.add_edge(rtl_tasklet, "c_out", w_C_out_stream, None, dace.Memlet("rtl_C_out_stream"))
+
+    return sdfg
 
 
 def make_copy_to_fpga_state(sdfg):
@@ -103,8 +218,8 @@ def make_fpga_state(sdfg):
     read_b_entry, read_b_exit = state.add_map(
         "read_b", {
             "n": "0:N",
-            "k": "0:K",
-            "m": "0:M"
+            "m": "0:M",
+            "k": "0:K"
         },
         schedule=dace.ScheduleType.FPGA_Device)
     read_b_tasklet = state.add_tasklet("read_b", {"mem"}, {"s"}, "s = mem")
@@ -129,8 +244,8 @@ def make_fpga_state(sdfg):
     n_entry, n_exit = state.add_map("outer_map", {"n": "0:N"},
                                     schedule=dace.ScheduleType.FPGA_Device)
     km_entry, km_exit = state.add_map("inner_map", {
-        "k": "0:K",
-        "m": "0:M"
+        "m": "0:M",
+        "k": "0:K"
     },
                                       schedule=dace.ScheduleType.FPGA_Device)
 
@@ -138,65 +253,39 @@ def make_fpga_state(sdfg):
                    dtype=dace.float32,
                    transient=True,
                    storage=dace.StorageType.FPGA_Local)
-    sdfg.add_array("A_reg", [1],
-                   dtype=dace.float32,
-                   transient=True,
-                   storage=dace.StorageType.FPGA_Local)
     output_buffer_read = state.add_read("output_buffer")
     output_buffer_write = state.add_write("output_buffer")
-    read_a_reg = state.add_read("A_reg")
-    write_a_reg = state.add_write("A_reg")
 
-    tasklet = state.add_tasklet(
-        "multiply_accumulate", {"a_mem", "a_reg_in", "b", "c_in"},
-        {"a_reg_out", "c_out"}, """\
-a = a_mem if m == 0 else a_reg_in
-a_reg_out = a
-prev = 0 if k == 0 else c_in
-c_out = prev + a * b""")
+    nested_tasklet = state.add_nested_sdfg(make_rtl_taskled_sdfg(), None, {'rtl_A_stream', 'rtl_B_stream', 'rtl_C_in_stream'}, {'rtl_C_out_stream'})
 
     state.add_memlet_path(A_pipe_in,
                           n_entry,
                           km_entry,
-                          tasklet,
-                          dst_conn="a_mem",
+                          nested_tasklet,
+                          dst_conn="rtl_A_stream",
                           memlet=dace.Memlet("A_pipe[0]", dynamic=True))
 
     state.add_memlet_path(B_pipe_in,
                           n_entry,
                           km_entry,
-                          tasklet,
-                          dst_conn="b",
+                          nested_tasklet,
+                          dst_conn="rtl_B_stream",
                           memlet=dace.Memlet("B_pipe[0]"))
-
-    state.add_memlet_path(read_a_reg,
-                          n_entry,
-                          km_entry,
-                          tasklet,
-                          dst_conn="a_reg_in",
-                          memlet=dace.Memlet("A_reg[0]"))
 
     state.add_memlet_path(output_buffer_read,
                           km_entry,
-                          tasklet,
-                          dst_conn="c_in",
+                          nested_tasklet,
+                          dst_conn="rtl_C_in_stream",
                           memlet=dace.Memlet("output_buffer[m]"))
 
     # Make sure it's in scope
     state.add_memlet_path(n_entry, output_buffer_read, memlet=dace.Memlet())
 
-    state.add_memlet_path(tasklet,
+    state.add_memlet_path(nested_tasklet,
                           km_exit,
                           output_buffer_write,
-                          src_conn="c_out",
+                          src_conn="rtl_C_out_stream",
                           memlet=dace.Memlet("output_buffer[m]"))
-
-    state.add_memlet_path(tasklet,
-                          km_exit,
-                          n_exit,
-                          write_a_reg,
-                          src_conn="a_reg_out",
-                          memlet=dace.Memlet("A_reg[0]"))
 
     state.add_memlet_path(output_buffer_write,
                           n_exit,
@@ -209,10 +298,10 @@ c_out = prev + a * b""")
 def make_sdfg(specialized):
 
     if specialized:
-        sdfg = dace.SDFG("mm_fpga_stream_{}x{}x{}".format(
+        sdfg = dace.SDFG("rtl_mm_nested_{}x{}x{}".format(
             N.get(), K.get(), M.get()))
     else:
-        sdfg = dace.SDFG("mm_fpga_stream_NxKx{}".format(M.get()))
+        sdfg = dace.SDFG("rtl_mm_nested_NxKx{}".format(M.get()))
 
     pre_state = make_copy_to_fpga_state(sdfg)
     compute_state = make_fpga_state(sdfg)
@@ -258,38 +347,21 @@ if __name__ == "__main__":
     A = np.ndarray([N.get(), K.get()], dtype=dace.float32.type)
     B = np.ndarray([K.get(), M.get()], dtype=dace.float32.type)
     C = np.ndarray([N.get(), M.get()], dtype=dace.float32.type)
-#    A[:] = [
-#        [dace.float32(1),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0)],
-#        [dace.float32(0),dace.float32(1),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0)],
-#        [dace.float32(0),dace.float32(0),dace.float32(1),dace.float32(0),dace.float32(0),dace.float32(0)],
-#        [dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(1),dace.float32(0),dace.float32(0)],
-#        [dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(1),dace.float32(0)],
-#        [dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(0),dace.float32(1)]
-#    ]
-    A[:] = np.random.rand(N.get(), K.get()).astype(dace.float32.type)
-#    B[:] = [
-#        [dace.float32(1), dace.float32(2), dace.float32(3), dace.float32(4), dace.float32(5), dace.float32(6)],
-#        [dace.float32(7), dace.float32(8), dace.float32(9), dace.float32(10), dace.float32(11), dace.float32(12)],
-#        [dace.float32(13), dace.float32(14), dace.float32(15), dace.float32(16), dace.float32(17), dace.float32(18)],
-#        [dace.float32(19), dace.float32(20), dace.float32(21), dace.float32(22), dace.float32(23), dace.float32(24)],
-#        [dace.float32(25), dace.float32(26), dace.float32(27), dace.float32(28), dace.float32(29), dace.float32(30)],
-#        [dace.float32(31), dace.float32(32), dace.float32(33), dace.float32(34), dace.float32(35), dace.float32(36)]
-#    ]
-    B[:] = np.random.rand(K.get(), M.get()).astype(dace.float32.type)
+    A[:] = 1  # np.random.rand(N.get(), K.get()).astype(dace.float32.type)
+    B[:] = 1  # np.random.rand(K.get(), M.get()).astype(dace.float32.type)
     C[:] = dace.float32(0)
+
+    A_regression = np.ndarray([N.get(), K.get()], dtype=np.float32)
+    B_regression = np.ndarray([K.get(), M.get()], dtype=np.float32)
+    C_regression = np.ndarray([N.get(), M.get()], dtype=np.float32)
+    A_regression[:] = A[:]
+    B_regression[:] = B[:]
+    C_regression[:] = C[:]
 
     if args["specialize"]:
         sdfg(A=A, B=B, C=C)
     else:
         sdfg(A=A, B=B, C=C, N=N, K=K)
-
-#    print("---------------------")
-#    print(A)
-#    print("*********************")
-#    print(B)
-#    print("=====================")
-#    print(C)
-#    print("---------------------")
 
     diff = np.linalg.norm((A @ B) - C) / float(M.get() * K.get())
     if diff > 1e-6:
