@@ -146,16 +146,7 @@ a_out = a_in
                           read_a_in,
                           dst_conn="a_in",
                           memlet=dace.Memlet("A_device[n, k]"))
-<<<<<<< HEAD
-    state.add_memlet_path(r_a_reg,
-                          in_entry,
-                          read_in,
-                          dst_conn="a_reg_in",
-                          memlet=dace.Memlet("a_reg[0]"))
-    state.add_memlet_path(read_in,
-=======
     state.add_memlet_path(read_a_in,
->>>>>>> just stuff
                           in_exit,
                           w_A_stream,
                           src_conn="a_out",
@@ -328,7 +319,7 @@ def make_sdfg():
     sdfg = dace.SDFG("rtl_matrix_multiplication")
 
     pre_state = make_copy_to_fpga_state(sdfg)
-    compute_state = make_
+    compute_state = make_fpga_state(sdfg)
     post_state = make_copy_to_host_state(sdfg)
 
     sdfg.add_edge(pre_state, compute_state, dace.InterstateEdge())
@@ -376,7 +367,6 @@ if __name__ == "__main__":
     #print(dace.Config.get('compiler', 'xilinx', 'frequency'))
     #sdfg.compile()
     #print(dace.Config.get('compiler', 'xilinx', 'frequency'))
-
     print("==== Program start ====")
 
     parser = argparse.ArgumentParser()
