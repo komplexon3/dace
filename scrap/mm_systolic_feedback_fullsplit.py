@@ -1,8 +1,10 @@
 # Copyright 2019-2021 ETH Zurich and the DaCe authors. All rights reserved.
 
-# Uses the feedback mechanism and has A & B preprocessing separated from the main compute.
+# Uses the feedback mechanism and has A & B preprocessing + post-processing separated from the main compute.
+# C preprocessing is part of the main compute.
 
 # DOESN'T WORK
+
 
 import argparse
 import dace
@@ -134,11 +136,12 @@ def make_write_C(state):
                           memlet=dace.Memlet("C_device[0:N, 0:M]",
                                              other_subset="P - 1"))
 
-def make_prep_c(state):
+def make_prep_a(sdfg, state):
 
-    C_feedback_in = state.add_read("C_feedback")
+    A_pipe_in = state.add_read("A_pipe")
+    A_pipe_carry_out = state.add_write("A_pipe")
 
-    comp_C_pipe_out = state.add_write("comp_C_pipe")
+    comp_A_pipe_out = state.add_write("comp_A_pipe")
 
     # Unroll processing elements
     preprocess_entry, preprocess_exit = state.add_map(
@@ -147,48 +150,10 @@ def make_prep_c(state):
         unroll=True)
 
     # Bring data nodes into scope
-    state.add_memlet_path(preprocess_entry, C_feedback_in, memlet=dace.Memlet())
-    state.add_memlet_path(comp_C_pipe_out, preprocess_exit, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(preprocess_entry, A_pipe_in, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(A_pipe_carry_out, preprocess_exit, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(comp_A_pipe_out, preprocess_exit, memlet=dace.memlet.Memlet())
 
-
-    entry_n0, exit_n0 = state.add_map("n0", {
-        "n0": "0:N/P",
-    },
-                                      schedule=dace.ScheduleType.FPGA_Device)
-    entry_k, exit_k = state.add_map("k", {"k": "0:K"},
-                                    schedule=dace.ScheduleType.FPGA_Device)
-    entry_m, exit_m = state.add_map("m", {"m": "0:M"},
-                                    schedule=dace.ScheduleType.FPGA_Device)
-
-    preprocess_tasklet = state.add_tasklet(
-        "preprocess_tasklet", {"c_in"}, {"c_out"}, """\
-c_out = 0.0 if k == 0 else c_in""")
-
-    state.add_memlet_path(C_feedback_in,
-                          entry_n0,
-                          entry_k,
-                          entry_m,
-                          preprocess_tasklet,
-                          dst_conn="c_in",
-                          memlet=dace.Memlet("C_feedback[p]", dynamic=True))
-    state.add_memlet_path(preprocess_tasklet,
-                          exit_m,
-                          exit_k,
-                          exit_n0,
-                          comp_C_pipe_out,
-                          memlet=dace.Memlet("comp_C_pipe[p]", dynamic=False),
-                          src_conn="c_out")
-
-def make_compute(sdfg, state):
-
-    A_pipe_in = state.add_read("A_pipe")
-    A_pipe_out = state.add_write("A_pipe")
-    B_pipe_in = state.add_read("B_pipe")
-    B_pipe_out = state.add_write("B_pipe")
-    C_pipe_in = state.add_read("C_pipe")
-    C_pipe_out = state.add_write("C_pipe")
-    comp_C_in = state.add_read("comp_C_pipe")
-    C_feedback_out = state.add_write("C_feedback")
 
     entry_n0, exit_n0 = state.add_map("n0", {
         "n0": "0:N/P",
@@ -200,11 +165,6 @@ def make_compute(sdfg, state):
                                     schedule=dace.ScheduleType.FPGA_Device)
     entry_m, exit_m = state.add_map("m", {"m": "0:M"},
                                     schedule=dace.ScheduleType.FPGA_Device)
-    entry_c, exit_c = state.add_map("write_C", {
-        "n1": "0:P",
-        "m": "0:M"
-    },
-                                    schedule=dace.ScheduleType.FPGA_Device)
 
     # Instantiate buffers
     sdfg.add_scalar("A_reg",
@@ -212,11 +172,6 @@ def make_compute(sdfg, state):
                     transient=True,
                     storage=dace.dtypes.StorageType.FPGA_Registers)
     A_reg = state.add_write("A_reg")
-    sdfg.add_array("C_buffer", [M],
-                    dtype=dace.float32,
-                    transient=True,
-                    storage=dace.dtypes.StorageType.FPGA_Registers)
-    C_buffer = state.add_write("C_buffer")
 
     buffer_a_tasklet = state.add_tasklet(
         "buffer_a", {"a_in"}, {"a_reg", "a_out"}, """\
@@ -240,58 +195,187 @@ if p < P - 1:
                           exit_a,
                           exit_k,
                           exit_n0,
-                          A_pipe_out,
+                          A_pipe_carry_out,
                           memlet=dace.Memlet("A_pipe[p + 1]", dynamic=True),
                           src_conn="a_out")
 
-    compute_tasklet = state.add_tasklet(
-        "multiply_add", {"a_in", "b_in", "c_in"}, {"b_out", "c_out", "c_out_feedback"}, """\
-c_out = c_in + a_in * b_in
-if k < K - 1:
-    c_out_feedback = c_out
-if p < P - 1:
-    b_out = b_in""")
+    preprocess_tasklet = state.add_tasklet(
+        "preprocess_tasklet", {"a_in"}, {"a_out"}, """\
+a_out = a_in
+""")
 
     state.add_memlet_path(A_reg,
                           entry_m,
-                          compute_tasklet,
+                          preprocess_tasklet,
                           dst_conn="a_in",
-                          memlet=dace.Memlet("A_reg[0]"))
+                          memlet=dace.Memlet("A_reg[0]", dynamic=False))
+    state.add_memlet_path(preprocess_tasklet,
+                          exit_m,
+                          exit_k,
+                          exit_n0,
+                          comp_A_pipe_out,
+                          memlet=dace.Memlet("comp_A_pipe[p]", dynamic=False),
+                          src_conn="a_out")
+
+def make_prep_b(state):
+
+    B_pipe_in = state.add_read("B_pipe")
+    B_pipe_carry_out = state.add_write("B_pipe")
+
+
+    comp_B_pipe_out = state.add_write("comp_B_pipe")
+
+    # Unroll processing elements
+    preprocess_entry, preprocess_exit = state.add_map(
+        "unroll_preprocess", {"p": "0:P"},
+        schedule=dace.ScheduleType.FPGA_Device,
+        unroll=True)
+
+    # Bring data nodes into scope
+    state.add_memlet_path(preprocess_entry, B_pipe_in, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(B_pipe_carry_out, preprocess_exit, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(comp_B_pipe_out, preprocess_exit, memlet=dace.memlet.Memlet())
+
+
+    entry_n0, exit_n0 = state.add_map("n0", {
+        "n0": "0:N/P",
+    },
+                                      schedule=dace.ScheduleType.FPGA_Device)
+    entry_k, exit_k = state.add_map("k", {"k": "0:K"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+    entry_m, exit_m = state.add_map("m", {"m": "0:M"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+
+
+    preprocess_tasklet = state.add_tasklet(
+        "preprocess_tasklet", { "b_in"}, {"b_comp_out", "b_carry_out"}, """\
+b_comp_out = b_in
+if p < P - 1:
+    b_carry_out = b_in""")
+
     state.add_memlet_path(B_pipe_in,
                           entry_n0,
                           entry_k,
                           entry_m,
-                          compute_tasklet,
+                          preprocess_tasklet,
                           memlet=dace.Memlet("B_pipe[p]", dynamic=False),
                           dst_conn="b_in")
-    state.add_memlet_path(compute_tasklet,
+    state.add_memlet_path(preprocess_tasklet,
                           exit_m,
                           exit_k,
                           exit_n0,
-                          B_pipe_out,
+                          comp_B_pipe_out,
+                          memlet=dace.Memlet("comp_B_pipe[p]", dynamic=False),
+                          src_conn="b_comp_out")
+    state.add_memlet_path(preprocess_tasklet,
+                          exit_m,
+                          exit_k,
+                          exit_n0,
+                          B_pipe_carry_out,
                           memlet=dace.Memlet("B_pipe[p + 1]", dynamic=True),
-                          src_conn="b_out")
-    state.add_memlet_path(comp_C_in,
+                          src_conn="b_carry_out")
+
+def make_prep_c(state):
+
+    C_feedback_in = state.add_read("C_feedback")
+
+    comp_C_out= state.add_write("comp_C_pipe")
+
+    # Unroll processing elements
+    preprocess_entry, preprocess_exit = state.add_map(
+        "unroll_preprocess", {"p": "0:P"},
+        schedule=dace.ScheduleType.FPGA_Device,
+        unroll=True)
+
+    # Bring data nodes into scope
+    state.add_memlet_path(preprocess_entry, C_feedback_in, memlet=dace.Memlet())
+    state.add_memlet_path(comp_C_out, preprocess_exit, memlet=dace.memlet.Memlet())
+
+
+    entry_n0, exit_n0 = state.add_map("n0", {
+        "n0": "0:N/P",
+    },
+                                      schedule=dace.ScheduleType.FPGA_Device)
+    entry_k, exit_k = state.add_map("k", {"k": "0:K"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+    entry_m, exit_m = state.add_map("m", {"m": "0:M"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+
+    preprocess_tasklet = state.add_tasklet(
+        "preprocess_tasklet", {"c_in"}, {"c_out"}, """\
+c_out = 0.0 if k == 0 else c_in""")
+
+
+    state.add_memlet_path(C_feedback_in,
                           entry_n0,
                           entry_k,
                           entry_m,
-                          compute_tasklet,
+                          preprocess_tasklet,
                           dst_conn="c_in",
-                          memlet=dace.Memlet("comp_C_pipe[p]", dynamic=False))
-    state.add_memlet_path(compute_tasklet,
+                          memlet=dace.Memlet("C_feedback[p]", dynamic=True))
+    state.add_memlet_path(preprocess_tasklet,
+                          exit_m,
+                          exit_k,
+                          exit_n0,
+                          comp_C_out,
+                          memlet=dace.Memlet("comp_C_pipe[p]", dynamic=False),
+                          src_conn="c_out")
+
+def make_post_compute(state):
+
+    comp_result_in = state.add_read("comp_result_pipe")
+    C_pipe_out = state.add_write("C_pipe")
+    C_pipe_in = state.add_read("C_pipe")
+
+    C_feedback_out = state.add_write("C_feedback")
+
+    entry_n0, exit_n0 = state.add_map("n0", {
+        "n0": "0:N/P",
+    },
+                                      schedule=dace.ScheduleType.FPGA_Device)
+    entry_k, exit_k = state.add_map("k", {"k": "0:K"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+    entry_m, exit_m = state.add_map("m", {"m": "0:M"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+    entry_c, exit_c = state.add_map("write_C", {
+        "n1": "0:P",
+        "m": "0:M"
+    },
+                                    schedule=dace.ScheduleType.FPGA_Device)
+
+    # Instantiate buffers
+    C_buffer = state.add_array("C_buffer", [M],
+                    dtype=dace.float32,
+                    transient=True,
+                    storage=dace.dtypes.StorageType.FPGA_Registers)
+
+    postprocess_tasklet = state.add_tasklet(
+        "postprocess_tasklet", {"c_in"}, {"c_out1", "c_out2"}, """\
+c_out1 = c_in
+if k < K-1:
+    c_out2 = c_in""")
+
+    state.add_memlet_path(comp_result_in,
+                          entry_n0,
+                          entry_k,
+                          entry_m,
+                          postprocess_tasklet,
+                          memlet=dace.Memlet("comp_result_pipe[p]", dynamic=False),
+                          dst_conn="c_in")
+    state.add_memlet_path(postprocess_tasklet,
                           exit_m,
                           exit_k,
                           C_buffer,
-                          memlet=dace.Memlet("C_buffer[m]"),
-                          src_conn="c_out")
-    state.add_memlet_path(compute_tasklet,
+                          memlet=dace.Memlet("C_buffer[m]", dynamic=False),
+                          src_conn="c_out1")
+#    state.add_memlet_path(C_buffer, exit_n0, memlet=dace.Memlet())
+    state.add_memlet_path(postprocess_tasklet,
                           exit_m,
                           exit_k,
                           exit_n0,
                           C_feedback_out,
                           memlet=dace.Memlet("C_feedback[p]", dynamic=True),
-                          src_conn="c_out_feedback")
-    state.add_memlet_path(C_buffer, exit_n0, memlet=dace.Memlet())
+                          src_conn="c_out2")
 
     # Write back
     write_c_tasklet = state.add_tasklet(
@@ -317,21 +401,78 @@ if n1 <= p:
                           src_conn="c_out")
 
     # Unroll processing elements
+    postprocess_entry, postprocess_exit = state.add_map(
+        "unroll_postprocess", {"p": "0:P"},
+        schedule=dace.ScheduleType.FPGA_Device,
+        unroll=True)
+
+    # Bring data nodes into scope
+    state.add_memlet_path(postprocess_entry, comp_result_in, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(postprocess_entry, C_pipe_in, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(C_pipe_out, postprocess_exit, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(C_feedback_out, postprocess_exit, memlet=dace.memlet.Memlet())
+
+def make_compute(sdfg, state):
+
+    comp_A_in = state.add_read("comp_A_pipe")
+    comp_B_in = state.add_read("comp_B_pipe")
+    comp_C_in = state.add_read("comp_C_pipe")
+
+    comp_result_out = state.add_write("comp_result_pipe")
+
+    entry_n0, exit_n0 = state.add_map("n0", {
+        "n0": "0:N/P",
+    },
+                                      schedule=dace.ScheduleType.FPGA_Device)
+    entry_k, exit_k = state.add_map("k", {"k": "0:K"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+    entry_m, exit_m = state.add_map("m", {"m": "0:M"},
+                                    schedule=dace.ScheduleType.FPGA_Device)
+
+    compute_tasklet = state.add_tasklet(
+        "multiply_add", {"a_in", "b_in", "c_in"}, {"c_out"}, """\
+c_out = c_in + a_in * b_in""")
+
+    state.add_memlet_path(comp_A_in,
+                          entry_n0,
+                          entry_k,
+                          entry_m,
+                          compute_tasklet,
+                          dst_conn="a_in",
+                          memlet=dace.Memlet("comp_A_pipe[p]"))
+    state.add_memlet_path(comp_B_in,
+                          entry_n0,
+                          entry_k,
+                          entry_m,
+                          compute_tasklet,
+                          memlet=dace.Memlet("comp_B_pipe[p]", dynamic=False),
+                          dst_conn="b_in")
+    state.add_memlet_path(comp_C_in,
+                          entry_n0,
+                          entry_k,
+                          entry_m,
+                          compute_tasklet,
+                          dst_conn="c_in",
+                          memlet=dace.Memlet("comp_C_pipe[p]", dynamic=False))
+    state.add_memlet_path(compute_tasklet,
+                          exit_m,
+                          exit_k,
+                          exit_n0,
+                          comp_result_out,
+                          memlet=dace.Memlet("comp_result_pipe[p]"),
+                          src_conn="c_out")
+
+    # Unroll processing elements
     compute_entry, compute_exit = state.add_map(
         "unroll_compute", {"p": "0:P"},
         schedule=dace.ScheduleType.FPGA_Device,
         unroll=True)
 
     # Bring data nodes into scope
-    state.add_memlet_path(compute_entry, A_pipe_in, memlet=dace.memlet.Memlet())
-    state.add_memlet_path(compute_entry, B_pipe_in, memlet=dace.memlet.Memlet())
-    state.add_memlet_path(compute_entry, C_pipe_in, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(compute_entry, comp_A_in, memlet=dace.memlet.Memlet())
+    state.add_memlet_path(compute_entry, comp_B_in, memlet=dace.memlet.Memlet())
     state.add_memlet_path(compute_entry, comp_C_in, memlet=dace.memlet.Memlet())
-    state.add_memlet_path(A_pipe_out, compute_exit, memlet=dace.memlet.Memlet())
-    state.add_memlet_path(B_pipe_out, compute_exit, memlet=dace.memlet.Memlet())
-    state.add_memlet_path(C_pipe_out, compute_exit, memlet=dace.memlet.Memlet())
-    state.add_memlet_path(C_feedback_out, compute_exit, memlet=dace.memlet.Memlet())
-
+    state.add_memlet_path(comp_result_out, compute_exit, memlet=dace.memlet.Memlet())
 
 def make_fpga_state(sdfg):
 
@@ -354,12 +495,30 @@ def make_fpga_state(sdfg):
                     shape=(P, ),
                     storage=dace.dtypes.StorageType.FPGA_Local)
 
+    sdfg.add_stream("comp_A_pipe",
+                    dace.float32,
+                    transient=True,
+                    shape=(P, ),
+                    buffer_size="100",
+                    storage=dace.dtypes.StorageType.FPGA_Local)
+    sdfg.add_stream("comp_B_pipe",
+                    dace.float32,
+                    transient=True,
+                    shape=(P, ),
+                    buffer_size="100",
+                    storage=dace.dtypes.StorageType.FPGA_Local)
     sdfg.add_stream("comp_C_pipe",
                     dace.float32,
                     transient=True,
                     shape=(P, ),
-                    storage=dace.dtypes.StorageType.FPGA_Local,
-                    buffer_size="M")
+                    buffer_size="100",
+                    storage=dace.dtypes.StorageType.FPGA_Local)
+    sdfg.add_stream("comp_result_pipe",
+                    dace.float32,
+                    transient=True,
+                    shape=(P, ),
+                    buffer_size="100",
+                    storage=dace.dtypes.StorageType.FPGA_Local)
 
     sdfg.add_stream("C_feedback",
                     dace.float32,
@@ -370,8 +529,11 @@ def make_fpga_state(sdfg):
 
     make_read_A(state)
     make_read_B(state)
+    make_prep_a(sdfg, state)
+    make_prep_b(state)
     make_prep_c(state)
     make_compute(sdfg, state)
+    make_post_compute(state)
     make_write_C(state)
 
     return state
@@ -380,10 +542,10 @@ def make_fpga_state(sdfg):
 def make_sdfg(specialized):
 
     if specialized:
-        sdfg = dace.SDFG("mm_systolic_feedback_inputC_{}_{}x{}x{}".format(
+        sdfg = dace.SDFG("mm_systolic_feedback_split_{}_{}x{}x{}".format(
             P.get(), N.get(), K.get(), M.get()))
     else:
-        sdfg = dace.SDFG("mm_systolic_feedback_inputC_{}_NxKx{}".format(P.get(), M.get()))
+        sdfg = dace.SDFG("mm_systolic_feedback_split_{}_NxKx{}".format(P.get(), M.get()))
 
     pre_state = make_copy_to_fpga_state(sdfg)
     compute_state = make_fpga_state(sdfg)
